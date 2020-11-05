@@ -2,15 +2,19 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <string.h>
 #include "command.h"
+#include <fcntl.h>
 
+//prototypes
 void ssh_interface(struct command*);
 void parseData(struct command *, char *);
 void buildin_cmd(struct command *);
 void other_cmd(struct command *);
 int* expansion_var(struct command *);
+int in_out_redirect(struct command *);
 
 //ssh interface
 void ssh_interface(struct command * cmd){
@@ -26,11 +30,7 @@ void ssh_interface(struct command * cmd){
 	
 		// get line to read command line
 		memset(str,'\0', sizeof(str));
-
 		n_chars = getline(&str, &str_len, stdin);
-
-//		printf("length:%i of string: %s\n", strlen(str), str);	
-//		printf("str[0]: %c\n", str[0]);
 
 		// check for empty or comment command line
 		if(str[0] != '#'&& strlen(str) > 1){
@@ -42,13 +42,13 @@ void ssh_interface(struct command * cmd){
 			// check for foreground or background
 			if(strncmp(cmd->cmdline[cmd->num_args-1], "&", 1) == 0){
 				//background	
-				
+				printf("background\n");
 			}else{
 				// foreground
-			//	other_cmd(cmd);
+				//other_cmd(md);
 			}					
 		}
-		printf("\n");
+//		printf("\n");
 	}
 }
 
@@ -59,22 +59,17 @@ void parseData(struct command * cmd, char * str){
 	int * match_index;
 	char *t_ptr;
 	char *token = strtok_r(str, " \n", &t_ptr);
-//	strcpy(cmd->name, token);
-//	printf("str name: %s\n", &t_ptr);	
 	
 	// extract command from input var to a stuct command	
 	while(token != NULL){
-//		printf("token lenght: %i\n", strlen(token));
-//   		strcpy(cmd->cmdline[i], token);
+
 		memset(cmd->cmdline[i], '\0', sizeof(cmd->cmdline[i]));
 		strcpy(cmd->cmdline[i], token);
 		cmd->num_args++; 
    		token = strtok_r(NULL, " \n", &t_ptr);
-//		cmd->num_args++;
 		i++;
 	}
 //	printCmd(cmd);
-//	match_index = expansion_var(cmd);
 	
 }
 
@@ -108,19 +103,18 @@ int* expansion_var(struct command * cmd){
 
 // Build in 3 commands
 void buildin_cmd(struct command* cmd){
-//	printf("cmd0: %s %i \n", cmd->cmdline[0], strcmp(cmd->cmdline[0], "exit"));
 
 	char token[MAX_SIZE];
 	char dir[MAX_SIZE];
 	memset(dir, '\0', sizeof(dir));
 	
-//	printf("cmdline->line: [%c]\n", cmd->cmdline[0][3]);
 	// conditions to check which command
 	if(strcmp(cmd->cmdline[0], "exit") == 0){
-//		printf("exit found\n");
+
 		exit(0);
+
 	}else if(strcmp(cmd->cmdline[0], "cd") == 0){
-		// HOME
+		// HOME path
 		if(cmd->num_args == 1){
 			chdir(getenv("HOME"));
 
@@ -130,53 +124,137 @@ void buildin_cmd(struct command* cmd){
 			strcat(dir, cmd->cmdline[1]);
 			chdir(dir);
 		}
-			// print result
-			getcwd(dir, sizeof(dir));
-			printf("%s\n", dir);
+
+		// print result
+		getcwd(dir, sizeof(dir));
+		printf("%s\n", dir);
+
 	}else if(strcmp(cmd->cmdline[0] , "status") == 0){
 //		printf("status\n");
-		
-	// call non build in commands
+
 	}else{
-		//printf("print command %s %i\n", cmd->cmdline[0], strlen(cmd->cmdline[0]));	
+		// check for non-build in commands
 		other_cmd(cmd);		
 	}
 }
 
 // Execute other commands by creating new processes using a function from the exec family of functions, this functionis based on exploration: monitoring child process
 void other_cmd(struct command * cmd){
-//	printf("other command function\n");
+//printf("other command function\n");
 	pid_t pid;
 	int childStatus, i;
-	
+	int check;	
+	char* temp[2];
 
 	pid = fork();
+	
+
 	if(pid == -1){
 		perror("fork() failed!");
 		exit(1);
-	}else if(pid == 0){
-		// execute commands
-//		printf("num of argus: %i\n", cmd->num_args);
-		cmd->cmdline[cmd->num_args] = NULL;
-//		memset(cmd->cmdline[cmd->num_args], '\0', sizeof(cmd->cmdline[cmd->num_args]));
-		if(cmd->cmdline[cmd->num_args] == NULL){
-			//printf("print command %s %i\n", cmd->cmdline[0], strlen(cmd->cmdline[0]));
-			execvp(cmd->cmdline[0], cmd->cmdline);
-		}
+	}else if(pid == 0){ // child process
+		// check >
+		check = in_out_redirect(cmd);
+		//printf("check after inout: %i\n", check);
+	        fflush(stdout);	
+		if(check != -1){
+
+			printf("found < or >\n");	
+			temp[0]= (char*)malloc(sizeof(char)*MAX_SIZE);
+			temp[1] = (char*)malloc (sizeof(char)*MAX_SIZE);	
+
+			strcpy(temp[0], cmd->cmdline[check]);
+			temp[1] = NULL;
+			printf("temp :%s \n", cmd->cmdline[check]);
+			fflush(stdout);
+    			execlp(cmd->cmdline[check],cmd->cmdline[check], NULL);
+//		}			
+			perror("execlp");	
+			exit(1);
+		}else if(check == -1) {	
+//			printf("after checking in out redirect fcuntion:\n");
+			cmd->cmdline[cmd->num_args] = NULL;
+			if(cmd->cmdline[cmd->num_args] == NULL){
+				execvp(cmd->cmdline[0],cmd->cmdline);
+			}
+		
+
 		perror("execvp");
-		return;
-//		exit(1);
+		exit(1);
+		}
 	}else{
 		//parent process
 		pid_t childPid = waitpid(pid, &childStatus, 0);
-		return;
-//		exit(0);
 	}		
 
 }
 
 // Support input and output redirection
+int in_out_redirect(struct command * cmd){
+	int i = 0, check = 0, index = -1;
+	int out_fd, in_fd;
+	int in, out;
+//	printf("in in_out function,check:%i\n", check);
+	// search for input/output symbol
+	while(i < cmd->num_args){
+		check = 0;
+		if(strcmp(cmd->cmdline[i], "<") == 0 ){
+         		out = i - 1;
+          		in = i + 1;
+			check = 1;
+    		}else if (strcmp(cmd->cmdline[i], ">") == 0){
+          		out = i + 1;
+          		in = i - 1;
+			check = 1;
+    		}
+		if(check == 1){
+		//	printf("match found!\n");
+			out_fd = open(cmd->cmdline[out], O_WRONLY | O_CREAT | O_TRUNC, 0777);
+			printf("file_name: %s\n", cmd->cmdline[out]);
+			fflush(stdout);
+			if(out_fd == -1){
+				printf("Can not open %s\n", cmd->cmdline[out]);
+				fflush(stdout);
+				exit(1);
+			}
+      			int result = dup2(out_fd, 1);
+			if (result == -1) { 
+				perror("target dup2()"); 
+				exit(2); 
+ 			}
+			in_fd = open(cmd->cmdline[in], O_RDONLY, 0777);
+			if(in_fd == -1){
+				if(cmd->num_args <= 3){
+					index = in;
+					break;
+					//printf("new command index: %i\n", in);
+					//fflush(stdin);
+				}
+           			perror("Can not open in file");
+				exit(1);
+			}
+			else{
+				result = dup2(in_fd, 0);
+				if (result == -1) { 
+    					perror("source dup2()"); 
+    					exit(2); 
+				}
+			}
+		}
+		i++;
+	}
+	printf("index: %i\n");
+	if(out_fd != -1){
+		fcntl(out_fd, F_SETFD, FD_CLOEXEC);
+	}
+	if(in_fd != -1){
+		fcntl(in_fd, F_SETFD, FD_CLOEXEC);
+		
+	}	
 
+	return index;	
+		
+}
 // Support running commands in foreground and background processes
 
 // Implement custom handlers for 2 signals, SIGINT and SIGTSTP
